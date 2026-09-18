@@ -264,7 +264,7 @@ git commit -m "feat: add BSAP model transport contracts"
 - Produces: ToolRequestAction(tool: str, arguments: Mapping[str, object])
 - Produces: FinalReportAction(report: BsapReport)
 - Produces: ModelProtocolError(code: str, safe_message: str)
-- Produces: parse_model_action(text: str, agent_id: str) -> ToolRequestAction | FinalReportAction
+- Produces: ActionParser.parse(text: str, agent_id: str) -> ToolRequestAction | FinalReportAction
 - Consumes: BsapReport, Finding, Evidence, AlternativeHypothesis
 
 - [ ] **Step 1: Write strict parser tests**
@@ -288,11 +288,11 @@ Use this representative happy-path test:
 ~~~python
 import json
 
-from bsap.model_protocol import FinalReportAction, ToolRequestAction, parse_model_action
+from bsap.model_protocol import ActionParser, FinalReportAction, ToolRequestAction
 
 
 def test_parse_read_tool_request() -> None:
-    action = parse_model_action(
+    action = ActionParser().parse(
         json.dumps(
             {
                 "type": "tool_request",
@@ -309,7 +309,7 @@ def test_parse_read_tool_request() -> None:
 
 
 def test_parse_final_report_injects_frozen_agent_id() -> None:
-    action = parse_model_action(
+    action = ActionParser().parse(
         json.dumps(
             {
                 "type": "final_report",
@@ -347,7 +347,7 @@ Use this representative rejection test:
 ~~~python
 import pytest
 
-from bsap.model_protocol import ModelProtocolError, parse_model_action
+from bsap.model_protocol import ActionParser, ModelProtocolError
 
 
 def test_prose_wrapped_json_is_rejected() -> None:
@@ -369,7 +369,7 @@ Expected: FAIL because model_protocol.py does not exist.
 
 - [ ] **Step 3: Implement exact-schema parsing**
 
-Create immutable ToolRequestAction and FinalReportAction dataclasses. Implement ModelProtocolError with a short code and safe message.
+Create immutable ToolRequestAction and FinalReportAction dataclasses. Implement ModelProtocolError with a short code and safe message. Implement ActionParser as the single parsing component; its parse method performs all envelope/schema conversion and never executes tools.
 
 Use json.loads(text) directly. Do not strip prose, search for braces, repair JSON, or retry parsing.
 
@@ -511,7 +511,7 @@ git commit -m "feat: build deterministic BSAP model prompts"
 - Produces: ModelExecutor(transport: ModelTransport, prompt_builder: PromptBuilder | None = None)
 - Implements: Executor.execute(prepared, tools, emit) -> BsapReport
 - Produces ExecutorInfo(type="model", version="0.2", transport=transport.transport_name, model=transport.model_name)
-- Consumes: parse_model_action, ToolDispatcher, ModelRequest, ModelResponse
+- Consumes: ActionParser, ToolDispatcher, ModelRequest, ModelResponse
 
 - [ ] **Step 1: Create a deterministic FakeModelTransport in the test module**
 
@@ -580,9 +580,11 @@ class ModelExecutor:
         *,
         transport: ModelTransport,
         prompt_builder: PromptBuilder | None = None,
+        action_parser: ActionParser | None = None,
     ) -> None:
         self._transport = transport
         self._prompt_builder = prompt_builder or PromptBuilder()
+        self._action_parser = action_parser or ActionParser()
 
     @property
     def info(self) -> ExecutorInfo:
@@ -624,7 +626,7 @@ class ModelExecutor:
             messages.append(ModelMessage(role="assistant", content=response.text))
 
             try:
-                action = parse_model_action(
+                action = ActionParser().parse(
                     response.text,
                     agent_id=prepared.agent_id,
                 )
@@ -1012,7 +1014,7 @@ Expected: PASS.
 With Byte-MCP running at its configured local Streamable HTTP URL, call list_tools only and assert:
 - nvidia_query exists;
 - its input schema contains prompt, model, system_prompt;
-- model alias lightning remains accepted by the governed runtime configuration.
+- the model argument remains present as a string-capable input; the live canary, not the schema probe, proves that the configured lightning alias is accepted.
 
 This step must not invoke nvidia_query. If the schema does not match, stop EXEC-02 integration work and update the transport contract deliberately; do not guess or bypass the gate.
 
@@ -1131,6 +1133,19 @@ Provide a main entry point that constructs StreamableHttpNvidiaQueryInvoker from
 - receipt executor provenance;
 - receipt hashes.
 
+If the child outcome is COMPLETED, the CLI must then print PARENT_DISPOSITION_REQUIRED and remain in the same process waiting for exactly one JSON line on stdin with this schema:
+
+~~~json
+{
+  "result": "accepted",
+  "accepted_findings": ["F-1"],
+  "rejected_findings": [],
+  "rationale": "Evidence supports the loader-boundary diagnosis."
+}
+~~~
+
+Validate result against ParentDispositionResult, require accepted/rejected finding IDs to be subsets of the actual report finding IDs, construct ParentDisposition, call manager.record_parent_disposition, print only the recorded disposition result, and exit. Invalid disposition JSON exits nonzero without changing the child terminal outcome.
+
 Do not print raw hidden model turns, credentials, or raw provider errors.
 
 - [ ] **Step 4: Document all new failure surfaces before live execution**
@@ -1216,15 +1231,15 @@ If provider failure occurs, record the FAILED execution and stop. Do not rerun u
 
 - [ ] **Step 8: Perform Byte parent disposition review**
 
-Byte reviews only the canary's evidence-backed report and observable event/receipt data. Byte then chooses one existing ParentDispositionResult:
+Leave the live-canary process open at PARENT_DISPOSITION_REQUIRED. Copy the printed evidence-backed report and observable receipt data to Byte. Byte evaluates only that material and returns one disposition JSON object using one existing ParentDispositionResult:
 - accepted;
 - partially_accepted;
 - rejected;
 - requires_further_investigation.
 
-Record the disposition through SubAgentManager.record_parent_disposition while the canary session object is still available in the acceptance harness. Confirm that child terminal outcome remains COMPLETED regardless of parent disposition.
+Paste Byte's disposition JSON as the single stdin line to the still-running canary process. The CLI validates it and records it through SubAgentManager.record_parent_disposition before process exit. Confirm that the child terminal outcome remains COMPLETED regardless of parent disposition.
 
-Do not make acceptance automatic based on keywords or expected fixture diagnosis.
+Do not make acceptance automatic based on keywords, the known fixture defect, or expected diagnosis.
 
 - [ ] **Step 9: Record the live acceptance evidence**
 
