@@ -1,6 +1,8 @@
-import client
-import settings
+import importlib
 
+
+client = importlib.import_module("client")
+settings = importlib.import_module("settings")
 
 http_settings = settings.load_http_settings({"request_timeout_ms": "5000"})
 options = client.build_request_options(http_settings)
