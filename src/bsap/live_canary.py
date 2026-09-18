@@ -166,7 +166,7 @@ def disposition_from_json(
 
     raw_result = payload["result"]
     if not isinstance(raw_result, str):
-        raise ValueError("Parent disposition result must be a string")
+        raise TypeError("Parent disposition result must be a string")
     try:
         disposition_result = ParentDispositionResult(raw_result)
     except ValueError as exc:

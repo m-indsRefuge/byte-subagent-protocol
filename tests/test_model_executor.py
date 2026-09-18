@@ -34,9 +34,13 @@ def fixed_clock() -> datetime:
 
 def prepared(
     *,
-    budget: Budget = Budget(max_steps=6, max_tool_calls=4),
-    permissions: PermissionSet = PermissionSet(filesystem_read=True, tests_run=True),
+    budget: Budget | None = None,
+    permissions: PermissionSet | None = None,
 ) -> PreparedRequest:
+    if budget is None:
+        budget = Budget(max_steps=6, max_tool_calls=4)
+    if permissions is None:
+        permissions = PermissionSet(filesystem_read=True, tests_run=True)
     return PreparedRequest(
         agent_id="BSA-MODEL",
         parent_id="BYTE",

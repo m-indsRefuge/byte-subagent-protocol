@@ -201,7 +201,7 @@ class StreamableHttpNvidiaQueryInvoker:
                 ProviderFailureCategory.TIMEOUT,
                 "Byte-MCP NVIDIA request timed out",
             ) from exc
-        except Exception as exc:  # noqa: BLE001 - normalize provider SDK failures
+        except Exception as exc:
             raise ModelTransportError(
                 ProviderFailureCategory.TRANSPORT_FAILURE,
                 "Byte-MCP NVIDIA transport failed",

@@ -97,7 +97,7 @@ class ModelExecutor:
                 continue
 
             if not isinstance(action, FinalReportAction):
-                raise RuntimeError("Unsupported parsed model action")
+                raise TypeError("Unsupported parsed model action")
 
             emit("report.started", {})
             emit(
