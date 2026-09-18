@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from pathlib import PurePosixPath
 
 from bsap.models import Budget, Event, PermissionSet
+from bsap.test_runner import AllowlistedTestRunner, TestRunTimeout
 
 
 class SandboxError(RuntimeError):
@@ -66,11 +67,32 @@ class InMemoryWorkspace:
                     matches.append({"path": path, "line": line_number, "text": line})
         return tuple(matches)
 
+    def is_test_allowed(self, name: str) -> bool:
+        return name in self._test_results
+
     def run_test(self, name: str) -> Mapping[str, object]:
         try:
             return dict(self._test_results[name])
         except KeyError as exc:
             raise KeyError(f"Unknown deterministic test: {name}") from exc
+
+
+class HostTestWorkspace(InMemoryWorkspace):
+    def __init__(
+        self,
+        *,
+        files: Mapping[str, str],
+        allowed_files: tuple[str, ...],
+        test_runner: AllowlistedTestRunner,
+    ) -> None:
+        super().__init__(files=files, allowed_files=allowed_files)
+        self._test_runner = test_runner
+
+    def is_test_allowed(self, name: str) -> bool:
+        return self._test_runner.is_allowed(name)
+
+    def run_test(self, name: str) -> Mapping[str, object]:
+        return self._test_runner.run(name)
 
 
 class BudgetCounter:
@@ -124,11 +146,22 @@ class ToolDispatcher:
         if not self._is_allowed(name):
             self._emit("permission.denied", {"name": name})
             raise PermissionDenied(f"Tool is not permitted: {name}")
+
+        if name == "tests.run":
+            test_name = str(arguments["name"])
+            if not self._workspace.is_test_allowed(test_name):
+                self._emit(
+                    "permission.denied",
+                    {"name": name, "reason": "test_not_allowlisted"},
+                )
+                raise PermissionDenied(f"Test is not allowlisted: {test_name}")
+
         try:
             self._budget.consume_tool_call()
         except BudgetExceeded:
             self._emit("budget.exhausted", {"kind": "tool_calls", "name": name})
             raise
+
         self._emit("tool.started", {"name": name})
         if name == "repository.read":
             result: Mapping[str, object] = {
@@ -136,9 +169,16 @@ class ToolDispatcher:
                 "content": self._workspace.read(str(arguments["path"])),
             }
         elif name == "repository.search":
-            result = {"query": str(arguments["query"]), "matches": self._workspace.search(str(arguments["query"]))}
+            result = {
+                "query": str(arguments["query"]),
+                "matches": self._workspace.search(str(arguments["query"])),
+            }
         elif name == "tests.run":
-            result = self._workspace.run_test(str(arguments["name"]))
+            try:
+                result = self._workspace.run_test(str(arguments["name"]))
+            except TestRunTimeout as exc:
+                self._emit("tool.failed", {"name": name, "reason": "timeout"})
+                raise ToolTimeout("Approved test timed out") from exc
         else:
             self._emit("permission.denied", {"name": name})
             raise PermissionDenied(f"Unknown tool: {name}")

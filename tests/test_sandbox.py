@@ -8,10 +8,13 @@ from bsap.sandbox import (
     BudgetCounter,
     BudgetExceeded,
     ContextAccessDenied,
+    HostTestWorkspace,
     InMemoryWorkspace,
     PermissionDenied,
     ToolDispatcher,
+    ToolTimeout,
 )
+from bsap.test_runner import AllowlistedTestRunner, ApprovedTest
 
 
 def fixed_clock() -> datetime:
@@ -71,3 +74,53 @@ def test_step_budget_is_enforced_before_consuming_excess_step() -> None:
     counter.consume_step()
     with pytest.raises(BudgetExceeded):
         counter.consume_step()
+
+
+def test_unknown_host_test_identifier_is_denied_before_tool_started(tmp_path) -> None:
+    log = EventLog("BSA-1", clock=fixed_clock)
+    workspace = HostTestWorkspace(
+        files={"allowed.py": "x = 1"},
+        allowed_files=("allowed.py",),
+        test_runner=AllowlistedTestRunner(tests=()),
+    )
+    tools = ToolDispatcher(
+        workspace=workspace,
+        permissions=PermissionSet(filesystem_read=True, tests_run=True),
+        budget_counter=BudgetCounter(Budget(max_steps=10, max_tool_calls=5)),
+        emit=log.emit,
+    )
+    with pytest.raises(PermissionDenied):
+        tools.call("tests.run", {"name": "invented"})
+    assert log.events[-1].kind == "permission.denied"
+    assert all(event.kind != "tool.started" for event in log.events)
+
+
+def test_timed_out_host_test_emits_tool_failed_and_raises_tool_timeout(tmp_path) -> None:
+    import sys
+
+    log = EventLog("BSA-1", clock=fixed_clock)
+    runner = AllowlistedTestRunner(
+        tests=(
+            ApprovedTest(
+                name="slow",
+                command=(sys.executable, "-c", "import time; time.sleep(1)"),
+                cwd=tmp_path,
+                timeout_seconds=0.05,
+            ),
+        )
+    )
+    workspace = HostTestWorkspace(
+        files={"allowed.py": "x = 1"},
+        allowed_files=("allowed.py",),
+        test_runner=runner,
+    )
+    tools = ToolDispatcher(
+        workspace=workspace,
+        permissions=PermissionSet(filesystem_read=True, tests_run=True),
+        budget_counter=BudgetCounter(Budget(max_steps=10, max_tool_calls=5)),
+        emit=log.emit,
+    )
+    with pytest.raises(ToolTimeout):
+        tools.call("tests.run", {"name": "slow"})
+    assert log.events[-1].kind == "tool.failed"
+    assert log.events[-1].payload == {"name": "tests.run", "reason": "timeout"}
