@@ -3,6 +3,8 @@ from datetime import UTC, datetime
 from bsap.executor import ExecutionCancelled, ScriptedDeterministicExecutor
 from bsap.lifecycle import EventLog, EventStoreFailure
 from bsap.manager import SubAgentManager
+from bsap.model_protocol import ModelProtocolError
+from bsap.model_transport import ModelTransportError, ProviderFailureCategory
 from bsap.models import (
     BsapReport,
     BsapRequest,
@@ -62,6 +64,19 @@ class CrashingExecutor:
 class CancellingExecutor(CrashingExecutor):
     def execute(self, prepared, tools, emit):
         raise ExecutionCancelled("cancelled")
+
+
+class ProviderFailingExecutor(CrashingExecutor):
+    def execute(self, prepared, tools, emit):
+        raise ModelTransportError(
+            ProviderFailureCategory.TIMEOUT,
+            "safe timeout classification",
+        )
+
+
+class ProtocolFailingExecutor(CrashingExecutor):
+    def execute(self, prepared, tools, emit):
+        raise ModelProtocolError("invalid_json", "safe protocol classification")
 
 
 class TimeoutWorkspace(InMemoryWorkspace):
@@ -182,3 +197,50 @@ def test_context_denial_is_known_failure_not_unknown_outcome() -> None:
     )
     result = manager.run(prepare(manager), executor, empty_workspace())
     assert result.terminal_outcome is TerminalOutcome.FAILED
+
+
+
+def test_provider_failure_has_explicit_safe_classification() -> None:
+    manager = make_manager()
+    result = manager.run(prepare(manager), ProviderFailingExecutor(), empty_workspace())
+    assert result.terminal_outcome is TerminalOutcome.FAILED
+    failed_event = next(event for event in result.events if event.kind == "agent.failed")
+    assert failed_event.payload == {
+        "classification": "FAILED",
+        "reason": "provider_failure",
+        "category": "timeout",
+    }
+    assert "safe timeout classification" not in repr(failed_event.payload)
+
+
+def test_protocol_failure_has_explicit_safe_classification() -> None:
+    manager = make_manager()
+    result = manager.run(prepare(manager), ProtocolFailingExecutor(), empty_workspace())
+    assert result.terminal_outcome is TerminalOutcome.FAILED
+    failed_event = next(event for event in result.events if event.kind == "agent.failed")
+    assert failed_event.payload == {
+        "classification": "FAILED",
+        "reason": "protocol_failure",
+        "code": "invalid_json",
+    }
+    assert "safe protocol classification" not in repr(failed_event.payload)
+
+
+def test_model_failure_releases_active_child_slot() -> None:
+    ids = iter(("BSA-FIRST", "BSA-NEXT"))
+    manager = SubAgentManager(id_factory=ids.__next__, clock=fixed_clock)
+    first = manager.prepare(
+        request(),
+        context_manifest=ContextManifest(files=("a.py",)),
+        permissions=PermissionSet(filesystem_read=True, tests_run=True),
+        budget=Budget(10, 10),
+    )
+    result = manager.run(first, ProviderFailingExecutor(), empty_workspace())
+    assert result.terminal_outcome is TerminalOutcome.FAILED
+    next_prepared = manager.prepare(
+        request(),
+        context_manifest=ContextManifest(files=("a.py",)),
+        permissions=PermissionSet(filesystem_read=True, tests_run=True),
+        budget=Budget(10, 10),
+    )
+    assert next_prepared.agent_id == "BSA-NEXT"

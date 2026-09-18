@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from bsap.canonical import sha256_hex
 from bsap.executor import ExecutionCancelled, Executor
 from bsap.lifecycle import EventLog, EventStoreFailure, Lifecycle
+from bsap.model_protocol import ModelProtocolError
+from bsap.model_transport import ModelTransportError
 from bsap.models import (
     BsapRequest,
     Budget,
@@ -144,10 +146,40 @@ class SubAgentManager:
             self._emit_safely(record.events, "agent.outcome_unknown", {})
         except ContextAccessDenied:
             self._transition_safely(record.lifecycle, LifecycleState.FAILED)
-            self._emit_safely(record.events, "agent.failed", {"classification": "FAILED", "reason": "context_denied"})
+            self._emit_safely(
+                record.events,
+                "agent.failed",
+                {"classification": "FAILED", "reason": "context_denied"},
+            )
         except ToolTimeout:
             self._transition_safely(record.lifecycle, LifecycleState.FAILED)
-            self._emit_safely(record.events, "agent.failed", {"classification": "FAILED", "reason": "tool_timeout"})
+            self._emit_safely(
+                record.events,
+                "agent.failed",
+                {"classification": "FAILED", "reason": "tool_timeout"},
+            )
+        except ModelTransportError as exc:
+            self._transition_safely(record.lifecycle, LifecycleState.FAILED)
+            self._emit_safely(
+                record.events,
+                "agent.failed",
+                {
+                    "classification": "FAILED",
+                    "reason": "provider_failure",
+                    "category": exc.category.value,
+                },
+            )
+        except ModelProtocolError as exc:
+            self._transition_safely(record.lifecycle, LifecycleState.FAILED)
+            self._emit_safely(
+                record.events,
+                "agent.failed",
+                {
+                    "classification": "FAILED",
+                    "reason": "protocol_failure",
+                    "code": exc.code,
+                },
+            )
         except (SandboxError, ReportValidationError, FileNotFoundError, RuntimeError):
             target = (
                 LifecycleState.OUTCOME_UNKNOWN
