@@ -96,3 +96,24 @@ def test_no_report_produces_no_report_hash() -> None:
         finished_at=now,
     )
     assert receipt.report_sha256 is None
+
+
+def test_receipt_preserves_model_executor_provenance() -> None:
+    now = datetime(2026, 9, 18, 10, 0, tzinfo=UTC)
+    receipt = build_receipt(
+        prepared=prepared(),
+        terminal_outcome=TerminalOutcome.FAILED,
+        events=(),
+        report=None,
+        executor_info=ExecutorInfo(
+            type="model",
+            version="0.2",
+            transport="byte-mcp-nvidia",
+            model="lightning",
+        ),
+        created_at=now,
+        started_at=now,
+        finished_at=now,
+    )
+    assert receipt.executor.transport == "byte-mcp-nvidia"
+    assert receipt.executor.model == "lightning"

@@ -152,6 +152,8 @@ class ParentDisposition:
 class ExecutorInfo:
     type: str
     version: str
+    transport: str | None = None
+    model: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
