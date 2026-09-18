@@ -352,7 +352,7 @@ from bsap.model_protocol import ActionParser, ModelProtocolError
 
 def test_prose_wrapped_json_is_rejected() -> None:
     with pytest.raises(ModelProtocolError) as exc_info:
-        parse_model_action(
+        ActionParser().parse(
             'Here is my answer: {"type":"tool_request","tool":"repository.read","arguments":{"path":"a.py"}}',
             agent_id="BSA-2",
         )
@@ -626,7 +626,7 @@ class ModelExecutor:
             messages.append(ModelMessage(role="assistant", content=response.text))
 
             try:
-                action = ActionParser().parse(
+                action = self._action_parser.parse(
                     response.text,
                     agent_id=prepared.agent_id,
                 )
