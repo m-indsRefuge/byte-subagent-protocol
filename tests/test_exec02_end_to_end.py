@@ -3,6 +3,7 @@ import json
 import pytest
 
 from bsap.live_canary import (
+    _print_result,
     disposition_from_json,
     run_live_canary,
 )
@@ -160,3 +161,19 @@ def test_parent_disposition_requires_completed_report() -> None:
             result,
             '{"result":"rejected","accepted_findings":[],"rejected_findings":[],"rationale":"x"}',
         )
+
+
+
+def test_failed_canary_prints_only_safe_failure_diagnostics(capsys) -> None:
+    transport = FakeModelTransport(("not-json",))
+    _, result = run_live_canary(transport)
+
+    _print_result(result)
+
+    output = capsys.readouterr().out
+    assert "terminal_outcome=FAILED" in output
+    assert '"kind":"protocol.failed"' in output
+    assert '"code":"invalid_json"' in output
+    assert '"kind":"agent.failed"' in output
+    assert '"reason":"protocol_failure"' in output
+    assert "not-json" not in output

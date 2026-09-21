@@ -203,6 +203,31 @@ def disposition_from_json(
     return disposition
 
 
+_SAFE_DIAGNOSTIC_EVENTS = frozenset(
+    {
+        "provider.failed",
+        "protocol.failed",
+        "agent.failed",
+        "permission.denied",
+        "budget.exhausted",
+        "tool.failed",
+        "context.denied",
+    }
+)
+
+
+def _safe_failure_diagnostics(result: ExecutionResult) -> tuple[dict[str, object], ...]:
+    return tuple(
+        {
+            "kind": event.kind,
+            "payload": dict(event.payload),
+            "sequence": event.sequence,
+        }
+        for event in result.events
+        if event.kind in _SAFE_DIAGNOSTIC_EVENTS
+    )
+
+
 def _print_result(result: ExecutionResult) -> None:
     print(f"agent_id={result.agent_id}")
     print(f"terminal_outcome={result.terminal_outcome.value}")
@@ -214,6 +239,8 @@ def _print_result(result: ExecutionResult) -> None:
             "recommended_next_action="
             + canonical_json(result.report.recommended_next_action)
         )
+    elif result.terminal_outcome is not TerminalOutcome.COMPLETED:
+        print("failure_diagnostics=" + canonical_json(_safe_failure_diagnostics(result)))
     print("executor=" + canonical_json(result.receipt.executor))
     print(f"request_sha256={result.receipt.request_sha256}")
     print(f"context_manifest_sha256={result.receipt.context_manifest_sha256}")
