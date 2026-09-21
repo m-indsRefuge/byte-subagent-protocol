@@ -74,6 +74,14 @@ class ProviderFailingExecutor(CrashingExecutor):
         )
 
 
+class ProviderOutcomeUnknownExecutor(CrashingExecutor):
+    def execute(self, prepared, tools, emit):
+        raise ModelTransportError(
+            ProviderFailureCategory.OUTCOME_UNKNOWN,
+            "safe provider ambiguity",
+        )
+
+
 class ProtocolFailingExecutor(CrashingExecutor):
     def execute(self, prepared, tools, emit):
         raise ModelProtocolError("invalid_json", "safe protocol classification")
@@ -244,3 +252,20 @@ def test_model_failure_releases_active_child_slot() -> None:
         budget=Budget(10, 10),
     )
     assert next_prepared.agent_id == "BSA-NEXT"
+
+
+
+def test_provider_outcome_unknown_preserves_terminal_ambiguity() -> None:
+    manager = make_manager()
+    result = manager.run(
+        prepare(manager),
+        ProviderOutcomeUnknownExecutor(),
+        empty_workspace(),
+    )
+    assert result.terminal_outcome is TerminalOutcome.OUTCOME_UNKNOWN
+    event = next(event for event in result.events if event.kind == "agent.outcome_unknown")
+    assert event.payload == {
+        "reason": "provider_outcome_unknown",
+        "category": "outcome_unknown",
+    }
+    assert "safe provider ambiguity" not in repr(event.payload)

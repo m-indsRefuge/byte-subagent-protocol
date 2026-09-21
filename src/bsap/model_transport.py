@@ -13,6 +13,7 @@ class ProviderFailureCategory(StrEnum):
     TRANSPORT_FAILURE = "transport_failure"
     UNEXPECTED_PROVIDER_FAILURE = "unexpected_provider_failure"
     CONTRACT_MISMATCH = "contract_mismatch"
+    OUTCOME_UNKNOWN = "outcome_unknown"
 
 
 @dataclass(frozen=True, slots=True)

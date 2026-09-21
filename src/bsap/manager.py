@@ -8,7 +8,7 @@ from bsap.canonical import sha256_hex
 from bsap.executor import ExecutionCancelled, Executor
 from bsap.lifecycle import EventLog, EventStoreFailure, Lifecycle
 from bsap.model_protocol import ModelProtocolError
-from bsap.model_transport import ModelTransportError
+from bsap.model_transport import ModelTransportError, ProviderFailureCategory
 from bsap.models import (
     BsapRequest,
     Budget,
@@ -159,16 +159,27 @@ class SubAgentManager:
                 {"classification": "FAILED", "reason": "tool_timeout"},
             )
         except ModelTransportError as exc:
-            self._transition_safely(record.lifecycle, LifecycleState.FAILED)
-            self._emit_safely(
-                record.events,
-                "agent.failed",
-                {
-                    "classification": "FAILED",
-                    "reason": "provider_failure",
-                    "category": exc.category.value,
-                },
-            )
+            if exc.category is ProviderFailureCategory.OUTCOME_UNKNOWN:
+                self._transition_safely(record.lifecycle, LifecycleState.OUTCOME_UNKNOWN)
+                self._emit_safely(
+                    record.events,
+                    "agent.outcome_unknown",
+                    {
+                        "reason": "provider_outcome_unknown",
+                        "category": exc.category.value,
+                    },
+                )
+            else:
+                self._transition_safely(record.lifecycle, LifecycleState.FAILED)
+                self._emit_safely(
+                    record.events,
+                    "agent.failed",
+                    {
+                        "classification": "FAILED",
+                        "reason": "provider_failure",
+                        "category": exc.category.value,
+                    },
+                )
         except ModelProtocolError as exc:
             self._transition_safely(record.lifecycle, LifecycleState.FAILED)
             self._emit_safely(

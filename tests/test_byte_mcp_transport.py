@@ -5,8 +5,11 @@ import pytest
 from bsap.byte_mcp_transport import (
     ByteMCPNvidiaTransport,
     StreamableHttpNvidiaQueryInvoker,
+    _completed_response,
     _extract_model_text,
-    _validate_nvidia_query_schema,
+    _extract_tool_mapping,
+    _query_id_from_start,
+    _validate_async_nvidia_query_schema,
 )
 from bsap.model_transport import (
     ModelMessage,
@@ -40,7 +43,7 @@ class FailingInvoker:
         self.calls += 1
         raise ModelTransportError(
             ProviderFailureCategory.TIMEOUT,
-            "Byte-MCP NVIDIA request timed out",
+            "Byte-MCP async NVIDIA request timed out",
         )
 
 
@@ -56,11 +59,11 @@ def request() -> ModelRequest:
 
 def test_transport_identifies_provider_and_model() -> None:
     transport = ByteMCPNvidiaTransport(invoker=RecordingInvoker("{}"))
-    assert transport.transport_name == "byte-mcp-nvidia"
+    assert transport.transport_name == "byte-mcp-nvidia-async"
     assert transport.model_name == "lightning"
 
 
-def test_send_invokes_nvidia_query_once_with_exact_alias_and_system_prompt() -> None:
+def test_send_invokes_one_async_query_start_abstraction_with_exact_alias_and_system_prompt() -> None:
     invoker = RecordingInvoker('{"type":"final_report","report":{}}')
     transport = ByteMCPNvidiaTransport(invoker=invoker)
 
@@ -89,7 +92,7 @@ def test_transport_does_not_retry_normalized_invoker_failure() -> None:
     assert invoker.calls == 1
 
 
-def tool_schema(*, include_system_prompt: bool = True):
+def start_schema(*, include_system_prompt: bool = True):
     properties = {
         "prompt": {"type": "string"},
         "model": {"type": "string"},
@@ -97,7 +100,7 @@ def tool_schema(*, include_system_prompt: bool = True):
     if include_system_prompt:
         properties["system_prompt"] = {"type": "string"}
     return {
-        "name": "nvidia_query",
+        "name": "nvidia_query_start",
         "inputSchema": {
             "type": "object",
             "properties": properties,
@@ -105,66 +108,73 @@ def tool_schema(*, include_system_prompt: bool = True):
     }
 
 
-def test_expected_nvidia_query_schema_is_accepted() -> None:
-    _validate_nvidia_query_schema([tool_schema()])
+def get_schema():
+    return {
+        "name": "nvidia_get_query",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"query_id": {"type": "string"}},
+        },
+    }
+
+
+def test_expected_async_nvidia_query_schema_is_accepted() -> None:
+    _validate_async_nvidia_query_schema([start_schema(), get_schema()])
 
 
 def test_snake_case_input_schema_is_accepted_for_sdk_compatibility() -> None:
-    tool = tool_schema()
-    tool["input_schema"] = tool.pop("inputSchema")
-    _validate_nvidia_query_schema([tool])
+    start = start_schema()
+    get = get_schema()
+    start["input_schema"] = start.pop("inputSchema")
+    get["input_schema"] = get.pop("inputSchema")
+    _validate_async_nvidia_query_schema([start, get])
 
 
 @pytest.mark.parametrize(
     "tools",
     [
         [],
-        [{"name": "search", "inputSchema": {"properties": {}}}],
-        [tool_schema(include_system_prompt=False)],
-        [tool_schema(), tool_schema()],
+        [{"name": "nvidia_query", "inputSchema": {"properties": {}}}],
+        [start_schema(include_system_prompt=False), get_schema()],
+        [start_schema()],
+        [get_schema()],
+        [start_schema(), start_schema(), get_schema()],
     ],
 )
-def test_schema_mismatch_fails_closed(tools) -> None:
+def test_async_schema_mismatch_fails_closed(tools) -> None:
     with pytest.raises(ModelTransportError) as exc_info:
-        _validate_nvidia_query_schema(tools)
+        _validate_async_nvidia_query_schema(tools)
     assert exc_info.value.category is ProviderFailureCategory.CONTRACT_MISMATCH
 
 
-def test_structured_response_string_is_extracted() -> None:
-    assert _extract_model_text(
+def test_tool_mapping_prefers_structured_content() -> None:
+    assert _extract_tool_mapping(
         {
             "isError": False,
-            "structuredContent": {"response": '{"type":"tool_request"}'},
+            "structuredContent": {"query_id": "NVQ-000001", "status": "QUEUED"},
             "content": [],
         }
-    ) == '{"type":"tool_request"}'
+    ) == {"query_id": "NVQ-000001", "status": "QUEUED"}
 
 
-def test_single_text_content_string_is_extracted() -> None:
-    assert _extract_model_text(
+def test_tool_mapping_accepts_single_json_text_block() -> None:
+    assert _extract_tool_mapping(
         {
             "isError": False,
             "structuredContent": None,
-            "content": [{"type": "text", "text": '{"type":"final_report"}'}],
+            "content": [
+                {
+                    "type": "text",
+                    "text": '{"query_id":"NVQ-000001","status":"RUNNING"}',
+                }
+            ],
         }
-    ) == '{"type":"final_report"}'
+    ) == {"query_id": "NVQ-000001", "status": "RUNNING"}
 
 
-def test_multiple_candidate_strings_are_rejected() -> None:
+def test_tool_error_is_normalized_without_exposing_raw_payload() -> None:
     with pytest.raises(ModelTransportError) as exc_info:
-        _extract_model_text(
-            {
-                "isError": False,
-                "structuredContent": {"response": "a", "text": "b"},
-                "content": [],
-            }
-        )
-    assert exc_info.value.category is ProviderFailureCategory.MALFORMED_RESPONSE
-
-
-def test_error_result_is_normalized_without_exposing_raw_payload() -> None:
-    with pytest.raises(ModelTransportError) as exc_info:
-        _extract_model_text(
+        _extract_tool_mapping(
             {
                 "isError": True,
                 "structuredContent": None,
@@ -175,10 +185,75 @@ def test_error_result_is_normalized_without_exposing_raw_payload() -> None:
     assert "SECRET-UPSTREAM-PAYLOAD" not in str(exc_info.value)
 
 
-def test_missing_response_string_is_malformed() -> None:
+def test_start_payload_requires_stable_query_identity() -> None:
+    assert _query_id_from_start({"query_id": "NVQ-000123", "status": "QUEUED"}) == "NVQ-000123"
+    with pytest.raises(ModelTransportError):
+        _query_id_from_start({"query_id": "bad", "status": "QUEUED"})
+
+
+def test_completed_async_query_returns_response() -> None:
+    assert (
+        _completed_response(
+            {
+                "query_id": "NVQ-000001",
+                "status": "COMPLETED",
+                "response": '{"type":"tool_request"}',
+            },
+            expected_query_id="NVQ-000001",
+        )
+        == '{"type":"tool_request"}'
+    )
+
+
+def test_running_async_query_returns_none_without_provider_retry() -> None:
+    assert (
+        _completed_response(
+            {
+                "query_id": "NVQ-000001",
+                "status": "RUNNING",
+                "provider_started": True,
+            },
+            expected_query_id="NVQ-000001",
+        )
+        is None
+    )
+
+
+def test_failed_async_query_is_safely_classified() -> None:
     with pytest.raises(ModelTransportError) as exc_info:
-        _extract_model_text({"isError": False, "structuredContent": {}, "content": []})
-    assert exc_info.value.category is ProviderFailureCategory.MALFORMED_RESPONSE
+        _completed_response(
+            {
+                "query_id": "NVQ-000001",
+                "status": "FAILED",
+                "provider_started": True,
+                "nvidia_failure_kind": "PROVIDER_UNAVAILABLE",
+            },
+            expected_query_id="NVQ-000001",
+        )
+    assert exc_info.value.category is ProviderFailureCategory.UNAVAILABLE
+
+
+def test_outcome_unknown_is_preserved() -> None:
+    with pytest.raises(ModelTransportError) as exc_info:
+        _completed_response(
+            {
+                "query_id": "NVQ-000001",
+                "status": "OUTCOME_UNKNOWN",
+                "provider_started": True,
+            },
+            expected_query_id="NVQ-000001",
+        )
+    assert exc_info.value.category is ProviderFailureCategory.OUTCOME_UNKNOWN
+
+
+def test_legacy_model_text_helper_remains_strict() -> None:
+    assert _extract_model_text(
+        {
+            "isError": False,
+            "structuredContent": {"response": '{"type":"tool_request"}'},
+            "content": [],
+        }
+    ) == '{"type":"tool_request"}'
 
 
 def test_synchronous_invoker_rejects_nested_event_loop() -> None:

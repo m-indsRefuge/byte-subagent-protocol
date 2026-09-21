@@ -208,6 +208,7 @@ _SAFE_DIAGNOSTIC_EVENTS = frozenset(
         "provider.failed",
         "protocol.failed",
         "agent.failed",
+        "agent.outcome_unknown",
         "permission.denied",
         "budget.exhausted",
         "tool.failed",

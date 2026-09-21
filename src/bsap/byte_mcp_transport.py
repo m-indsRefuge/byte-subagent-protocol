@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
@@ -11,6 +13,11 @@ from bsap.model_transport import (
     ModelTransportError,
     ProviderFailureCategory,
 )
+
+_QUERY_ID = re.compile(r"NVQ-[0-9]{6}\Z")
+_ACTIVE_QUERY_STATUSES = frozenset({"QUEUED", "RUNNING"})
+_TERMINAL_QUERY_STATUSES = frozenset({"COMPLETED", "FAILED", "OUTCOME_UNKNOWN"})
+_ALL_QUERY_STATUSES = _ACTIVE_QUERY_STATUSES | _TERMINAL_QUERY_STATUSES
 
 
 class NvidiaQueryInvoker(Protocol):
@@ -35,93 +42,176 @@ def _field(value: object, *names: str) -> object | None:
     return None
 
 
-def _validate_nvidia_query_schema(tools: Sequence[object]) -> None:
-    matches = [tool for tool in tools if _field(tool, "name") == "nvidia_query"]
+def _tool_schema(tools: Sequence[object], name: str) -> Mapping[str, object]:
+    matches = [tool for tool in tools if _field(tool, "name") == name]
     if len(matches) != 1:
         raise ModelTransportError(
             ProviderFailureCategory.CONTRACT_MISMATCH,
-            "Byte-MCP nvidia_query schema does not match EXEC-02",
+            "Byte-MCP async NVIDIA query schema does not match EXEC-02",
         )
-
     schema = _field(matches[0], "inputSchema", "input_schema")
     if not isinstance(schema, Mapping):
         raise ModelTransportError(
             ProviderFailureCategory.CONTRACT_MISMATCH,
-            "Byte-MCP nvidia_query schema does not match EXEC-02",
+            "Byte-MCP async NVIDIA query schema does not match EXEC-02",
         )
+    return schema
+
+
+def _schema_properties(schema: Mapping[str, object]) -> Mapping[str, object]:
     properties = schema.get("properties")
     if not isinstance(properties, Mapping):
         raise ModelTransportError(
             ProviderFailureCategory.CONTRACT_MISMATCH,
-            "Byte-MCP nvidia_query schema does not match EXEC-02",
+            "Byte-MCP async NVIDIA query schema does not match EXEC-02",
         )
+    return properties
 
-    required_properties = {"prompt", "model", "system_prompt"}
-    if not required_properties.issubset(properties):
+
+def _validate_async_nvidia_query_schema(tools: Sequence[object]) -> None:
+    start_properties = _schema_properties(_tool_schema(tools, "nvidia_query_start"))
+    get_properties = _schema_properties(_tool_schema(tools, "nvidia_get_query"))
+
+    if not {"prompt", "model", "system_prompt"}.issubset(start_properties):
         raise ModelTransportError(
             ProviderFailureCategory.CONTRACT_MISMATCH,
-            "Byte-MCP nvidia_query schema does not match EXEC-02",
+            "Byte-MCP async NVIDIA query schema does not match EXEC-02",
+        )
+    if "query_id" not in get_properties:
+        raise ModelTransportError(
+            ProviderFailureCategory.CONTRACT_MISMATCH,
+            "Byte-MCP async NVIDIA query schema does not match EXEC-02",
         )
 
-    model_schema = properties["model"]
-    if isinstance(model_schema, Mapping):
-        model_type = model_schema.get("type")
-        model_enum = model_schema.get("enum")
-        string_capable = model_type in (None, "string") or (
-            isinstance(model_enum, list)
-            and bool(model_enum)
-            and all(isinstance(item, str) for item in model_enum)
-        )
-        if not string_capable:
-            raise ModelTransportError(
-                ProviderFailureCategory.CONTRACT_MISMATCH,
-                "Byte-MCP nvidia_query schema does not match EXEC-02",
-            )
+
+def _validate_nvidia_query_schema(tools: Sequence[object]) -> None:
+    """Compatibility alias for the EXEC-02 async schema validator."""
+    _validate_async_nvidia_query_schema(tools)
 
 
-def _extract_model_text(result: object) -> str:
-    is_error = bool(_field(result, "isError", "is_error"))
-    if is_error:
+def _extract_tool_mapping(result: object) -> dict[str, object]:
+    if bool(_field(result, "isError", "is_error")):
         raise ModelTransportError(
             ProviderFailureCategory.UNEXPECTED_PROVIDER_FAILURE,
-            "Byte-MCP nvidia_query returned an error",
+            "Byte-MCP async NVIDIA query tool returned an error",
         )
 
     structured = _field(result, "structuredContent", "structured_content")
     if isinstance(structured, Mapping):
-        candidates = [
-            value
-            for key in ("response", "result", "text", "content")
-            if isinstance((value := structured.get(key)), str)
-        ]
-        if len(candidates) == 1:
-            return candidates[0]
-        if len(candidates) > 1:
-            raise ModelTransportError(
-                ProviderFailureCategory.MALFORMED_RESPONSE,
-                "Byte-MCP nvidia_query returned an ambiguous response",
-            )
+        return dict(structured)
 
     content = _field(result, "content")
     if isinstance(content, Sequence) and not isinstance(content, (str, bytes, bytearray)):
-        candidates: list[str] = []
-        for block in content:
-            block_type = _field(block, "type")
-            text = _field(block, "text")
-            if block_type == "text" and isinstance(text, str):
-                candidates.append(text)
-        if len(candidates) == 1:
-            return candidates[0]
-        if len(candidates) > 1:
-            raise ModelTransportError(
-                ProviderFailureCategory.MALFORMED_RESPONSE,
-                "Byte-MCP nvidia_query returned multiple text responses",
-            )
+        texts = [
+            text
+            for block in content
+            if _field(block, "type") == "text"
+            and isinstance((text := _field(block, "text")), str)
+        ]
+        if len(texts) == 1:
+            try:
+                payload = json.loads(texts[0])
+            except json.JSONDecodeError as exc:
+                raise ModelTransportError(
+                    ProviderFailureCategory.MALFORMED_RESPONSE,
+                    "Byte-MCP async NVIDIA query returned invalid JSON",
+                ) from exc
+            if isinstance(payload, dict):
+                return payload
 
     raise ModelTransportError(
         ProviderFailureCategory.MALFORMED_RESPONSE,
-        "Byte-MCP nvidia_query did not return one model response string",
+        "Byte-MCP async NVIDIA query returned an invalid result",
     )
+
+
+def _extract_model_text(result: object) -> str:
+    """Legacy helper retained for deterministic compatibility tests."""
+    payload = _extract_tool_mapping(result)
+    candidates = [
+        value
+        for key in ("response", "result", "text", "content")
+        if isinstance((value := payload.get(key)), str)
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    raise ModelTransportError(
+        ProviderFailureCategory.MALFORMED_RESPONSE,
+        "Byte-MCP NVIDIA result did not contain one response string",
+    )
+
+
+def _query_id_from_start(payload: Mapping[str, object]) -> str:
+    query_id = payload.get("query_id")
+    status = payload.get("status")
+    if (
+        not isinstance(query_id, str)
+        or _QUERY_ID.fullmatch(query_id) is None
+        or not isinstance(status, str)
+        or status not in _ALL_QUERY_STATUSES
+    ):
+        raise ModelTransportError(
+            ProviderFailureCategory.MALFORMED_RESPONSE,
+            "Byte-MCP async NVIDIA query start result is invalid",
+        )
+    return query_id
+
+
+def _failure_category(payload: Mapping[str, object]) -> ProviderFailureCategory:
+    error_code = payload.get("error_code")
+    nvidia_kind = payload.get("nvidia_failure_kind")
+    transport_kind = payload.get("transport_failure_kind")
+
+    if isinstance(transport_kind, str) and transport_kind:
+        return ProviderFailureCategory.TRANSPORT_FAILURE
+    if nvidia_kind in {"PROVIDER_UNAVAILABLE", "MODEL_OR_ENDPOINT_UNAVAILABLE"}:
+        return ProviderFailureCategory.UNAVAILABLE
+    if nvidia_kind in {
+        "AUTHENTICATION",
+        "PERMISSION",
+        "REQUEST",
+        "REQUEST_TOO_LARGE",
+        "RATE_LIMIT",
+    }:
+        return ProviderFailureCategory.REJECTED_REQUEST
+    if error_code == "CREDENTIAL_UNAVAILABLE":
+        return ProviderFailureCategory.UNAVAILABLE
+    return ProviderFailureCategory.UNEXPECTED_PROVIDER_FAILURE
+
+
+def _completed_response(
+    payload: Mapping[str, object],
+    *,
+    expected_query_id: str,
+) -> str | None:
+    query_id = payload.get("query_id")
+    status = payload.get("status")
+    if query_id != expected_query_id or not isinstance(status, str) or status not in _ALL_QUERY_STATUSES:
+        raise ModelTransportError(
+            ProviderFailureCategory.MALFORMED_RESPONSE,
+            "Byte-MCP async NVIDIA query status result is invalid",
+        )
+
+    if status in _ACTIVE_QUERY_STATUSES:
+        return None
+    if status == "OUTCOME_UNKNOWN":
+        raise ModelTransportError(
+            ProviderFailureCategory.OUTCOME_UNKNOWN,
+            "Byte-MCP async NVIDIA query outcome is unknown",
+        )
+    if status == "FAILED":
+        raise ModelTransportError(
+            _failure_category(payload),
+            "Byte-MCP async NVIDIA query failed",
+        )
+
+    response = payload.get("response")
+    if not isinstance(response, str) or not response:
+        raise ModelTransportError(
+            ProviderFailureCategory.MALFORMED_RESPONSE,
+            "Byte-MCP async NVIDIA query completed without a response",
+        )
+    return response
 
 
 class ByteMCPNvidiaTransport:
@@ -136,7 +226,7 @@ class ByteMCPNvidiaTransport:
 
     @property
     def transport_name(self) -> str:
-        return "byte-mcp-nvidia"
+        return "byte-mcp-nvidia-async"
 
     @property
     def model_name(self) -> str:
@@ -157,8 +247,20 @@ class ByteMCPNvidiaTransport:
 
 
 class StreamableHttpNvidiaQueryInvoker:
-    def __init__(self, mcp_url: str) -> None:
+    def __init__(
+        self,
+        mcp_url: str,
+        *,
+        poll_interval_seconds: float = 2.0,
+        poll_timeout_seconds: float = 420.0,
+    ) -> None:
+        if poll_interval_seconds <= 0:
+            raise ValueError("poll_interval_seconds must be positive")
+        if poll_timeout_seconds <= 0:
+            raise ValueError("poll_timeout_seconds must be positive")
         self._mcp_url = mcp_url
+        self._poll_interval_seconds = poll_interval_seconds
+        self._poll_timeout_seconds = poll_timeout_seconds
 
     def probe_schema(self) -> None:
         self._ensure_no_running_loop()
@@ -199,12 +301,12 @@ class StreamableHttpNvidiaQueryInvoker:
         except TimeoutError as exc:
             raise ModelTransportError(
                 ProviderFailureCategory.TIMEOUT,
-                "Byte-MCP NVIDIA request timed out",
+                "Byte-MCP async NVIDIA request timed out",
             ) from exc
         except Exception as exc:
             raise ModelTransportError(
                 ProviderFailureCategory.TRANSPORT_FAILURE,
-                "Byte-MCP NVIDIA transport failed",
+                "Byte-MCP async NVIDIA transport failed",
             ) from exc
 
     @staticmethod
@@ -232,7 +334,7 @@ class StreamableHttpNvidiaQueryInvoker:
                         ProviderFailureCategory.CONTRACT_MISMATCH,
                         "Byte-MCP did not return a valid tool list",
                     )
-                _validate_nvidia_query_schema(tools)
+                _validate_async_nvidia_query_schema(tools)
 
     async def _invoke_async(
         self,
@@ -253,13 +355,42 @@ class StreamableHttpNvidiaQueryInvoker:
                         ProviderFailureCategory.CONTRACT_MISMATCH,
                         "Byte-MCP did not return a valid tool list",
                     )
-                _validate_nvidia_query_schema(tools)
-                result = await session.call_tool(
-                    "nvidia_query",
+                _validate_async_nvidia_query_schema(tools)
+
+                started = await session.call_tool(
+                    "nvidia_query_start",
                     arguments={
                         "prompt": prompt,
                         "model": model,
                         "system_prompt": system_prompt,
                     },
                 )
-                return _extract_model_text(result)
+                start_payload = _extract_tool_mapping(started)
+                query_id = _query_id_from_start(start_payload)
+
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + self._poll_timeout_seconds
+                while True:
+                    fetched = await session.call_tool(
+                        "nvidia_get_query",
+                        arguments={"query_id": query_id},
+                    )
+                    payload = _extract_tool_mapping(fetched)
+                    response = _completed_response(
+                        payload,
+                        expected_query_id=query_id,
+                    )
+                    if response is not None:
+                        return response
+
+                    if loop.time() >= deadline:
+                        if payload.get("provider_started") is True:
+                            raise ModelTransportError(
+                                ProviderFailureCategory.OUTCOME_UNKNOWN,
+                                "Byte-MCP async NVIDIA query exceeded the polling deadline",
+                            )
+                        raise ModelTransportError(
+                            ProviderFailureCategory.TIMEOUT,
+                            "Byte-MCP async NVIDIA query did not start before the polling deadline",
+                        )
+                    await asyncio.sleep(self._poll_interval_seconds)
