@@ -254,7 +254,6 @@ def test_model_failure_releases_active_child_slot() -> None:
     assert next_prepared.agent_id == "BSA-NEXT"
 
 
-
 def test_provider_outcome_unknown_preserves_terminal_ambiguity() -> None:
     manager = make_manager()
     result = manager.run(
