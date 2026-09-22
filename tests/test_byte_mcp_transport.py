@@ -205,13 +205,14 @@ def test_completed_async_query_returns_response() -> None:
     )
 
 
-def test_running_async_query_returns_none_without_provider_retry() -> None:
+@pytest.mark.parametrize("status", ["PREPARED", "QUEUED", "RUNNING"])
+def test_active_async_query_returns_none_without_provider_retry(status: str) -> None:
     assert (
         _completed_response(
             {
                 "query_id": "NVQ-000001",
-                "status": "RUNNING",
-                "provider_started": True,
+                "status": status,
+                "provider_started": status == "RUNNING",
             },
             expected_query_id="NVQ-000001",
         )
