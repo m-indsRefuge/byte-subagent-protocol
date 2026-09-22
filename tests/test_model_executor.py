@@ -274,7 +274,6 @@ def test_executor_info_reports_transport_and_model() -> None:
     assert info.model == "fixture-model"
 
 
-
 class OutcomeUnknownTransport:
     @property
     def transport_name(self) -> str:
@@ -293,18 +292,18 @@ class OutcomeUnknownTransport:
 
 
 def test_model_executor_emits_provider_outcome_unknown() -> None:
-    events = []
+    request = prepared()
+    tools, log = tools_for(request)
     executor = ModelExecutor(transport=OutcomeUnknownTransport())
 
     with pytest.raises(ModelTransportError):
-        executor.execute(
-            prepared(),
-            dispatcher(),
-            lambda kind, payload: events.append((kind, payload)),
-        )
+        executor.execute(request, tools, log.emit)
 
-    assert ("provider.outcome_unknown", {
+    event = next(
+        event for event in log.events if event.kind == "provider.outcome_unknown"
+    )
+    assert event.payload == {
         "turn": 1,
         "category": "outcome_unknown",
         "stage": "start",
-    }) in events
+    }
