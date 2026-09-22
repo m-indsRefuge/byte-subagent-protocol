@@ -38,9 +38,12 @@ class ModelTransportError(RuntimeError):
         self,
         category: ProviderFailureCategory,
         safe_message: str,
+        *,
+        stage: str | None = None,
     ) -> None:
         super().__init__(safe_message)
         self.category = category
+        self.stage = stage
 
 
 class ModelTransport(Protocol):

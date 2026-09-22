@@ -167,6 +167,7 @@ class SubAgentManager:
                     {
                         "reason": "provider_outcome_unknown",
                         "category": exc.category.value,
+                        **({"stage": exc.stage} if exc.stage is not None else {}),
                     },
                 )
             else:
@@ -178,6 +179,7 @@ class SubAgentManager:
                         "classification": "FAILED",
                         "reason": "provider_failure",
                         "category": exc.category.value,
+                        **({"stage": exc.stage} if exc.stage is not None else {}),
                     },
                 )
         except ModelProtocolError as exc:

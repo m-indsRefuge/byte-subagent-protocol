@@ -11,6 +11,7 @@ from bsap.model_transport import (
     ModelRequest,
     ModelTransport,
     ModelTransportError,
+    ProviderFailureCategory,
 )
 from bsap.models import BsapReport, ExecutorInfo, PreparedRequest
 from bsap.prompting import PromptBuilder
@@ -61,10 +62,18 @@ class ModelExecutor:
                     )
                 )
             except ModelTransportError as exc:
-                emit(
-                    "provider.failed",
-                    {"turn": turn, "category": exc.category.value},
+                kind = (
+                    "provider.outcome_unknown"
+                    if exc.category is ProviderFailureCategory.OUTCOME_UNKNOWN
+                    else "provider.failed"
                 )
+                payload: dict[str, object] = {
+                    "turn": turn,
+                    "category": exc.category.value,
+                }
+                if exc.stage is not None:
+                    payload["stage"] = exc.stage
+                emit(kind, payload)
                 raise
 
             emit(

@@ -272,3 +272,39 @@ def test_executor_info_reports_transport_and_model() -> None:
     assert info.version == "0.2"
     assert info.transport == "fake"
     assert info.model == "fixture-model"
+
+
+
+class OutcomeUnknownTransport:
+    @property
+    def transport_name(self) -> str:
+        return "fixture-outcome-unknown"
+
+    @property
+    def model_name(self) -> str:
+        return "fixture-model"
+
+    def send(self, request):
+        raise ModelTransportError(
+            ProviderFailureCategory.OUTCOME_UNKNOWN,
+            "safe ambiguity",
+            stage="start",
+        )
+
+
+def test_model_executor_emits_provider_outcome_unknown() -> None:
+    events = []
+    executor = ModelExecutor(transport=OutcomeUnknownTransport())
+
+    with pytest.raises(ModelTransportError):
+        executor.execute(
+            prepared(),
+            dispatcher(),
+            lambda kind, payload: events.append((kind, payload)),
+        )
+
+    assert ("provider.outcome_unknown", {
+        "turn": 1,
+        "category": "outcome_unknown",
+        "stage": "start",
+    }) in events

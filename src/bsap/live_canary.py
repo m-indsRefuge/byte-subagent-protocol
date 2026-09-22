@@ -206,6 +206,7 @@ def disposition_from_json(
 _SAFE_DIAGNOSTIC_EVENTS = frozenset(
     {
         "provider.failed",
+        "provider.outcome_unknown",
         "protocol.failed",
         "agent.failed",
         "agent.outcome_unknown",

@@ -79,6 +79,7 @@ class ProviderOutcomeUnknownExecutor(CrashingExecutor):
         raise ModelTransportError(
             ProviderFailureCategory.OUTCOME_UNKNOWN,
             "safe provider ambiguity",
+            stage="start",
         )
 
 
@@ -266,5 +267,6 @@ def test_provider_outcome_unknown_preserves_terminal_ambiguity() -> None:
     assert event.payload == {
         "reason": "provider_outcome_unknown",
         "category": "outcome_unknown",
+        "stage": "start",
     }
     assert "safe provider ambiguity" not in repr(event.payload)

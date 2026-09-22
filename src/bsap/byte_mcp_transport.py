@@ -327,7 +327,14 @@ class StreamableHttpNvidiaQueryInvoker:
             read_stream, write_stream = streams[0], streams[1]
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
-                listed = await session.list_tools()
+                try:
+                    listed = await session.list_tools()
+                except Exception as exc:
+                    raise ModelTransportError(
+                        ProviderFailureCategory.TRANSPORT_FAILURE,
+                        "Byte-MCP async NVIDIA schema listing failed",
+                        stage="schema",
+                    ) from exc
                 tools = _field(listed, "tools")
                 if not isinstance(tools, Sequence):
                     raise ModelTransportError(
@@ -348,7 +355,14 @@ class StreamableHttpNvidiaQueryInvoker:
             read_stream, write_stream = streams[0], streams[1]
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
-                listed = await session.list_tools()
+                try:
+                    listed = await session.list_tools()
+                except Exception as exc:
+                    raise ModelTransportError(
+                        ProviderFailureCategory.TRANSPORT_FAILURE,
+                        "Byte-MCP async NVIDIA schema listing failed",
+                        stage="schema",
+                    ) from exc
                 tools = _field(listed, "tools")
                 if not isinstance(tools, Sequence):
                     raise ModelTransportError(
@@ -357,24 +371,38 @@ class StreamableHttpNvidiaQueryInvoker:
                     )
                 _validate_async_nvidia_query_schema(tools)
 
-                started = await session.call_tool(
-                    "nvidia_query_start",
-                    arguments={
-                        "prompt": prompt,
-                        "model": model,
-                        "system_prompt": system_prompt,
-                    },
-                )
+                try:
+                    started = await session.call_tool(
+                        "nvidia_query_start",
+                        arguments={
+                            "prompt": prompt,
+                            "model": model,
+                            "system_prompt": system_prompt,
+                        },
+                    )
+                except Exception as exc:
+                    raise ModelTransportError(
+                        ProviderFailureCategory.OUTCOME_UNKNOWN,
+                        "Byte-MCP async NVIDIA query start outcome is unknown",
+                        stage="start",
+                    ) from exc
                 start_payload = _extract_tool_mapping(started)
                 query_id = _query_id_from_start(start_payload)
 
                 loop = asyncio.get_running_loop()
                 deadline = loop.time() + self._poll_timeout_seconds
                 while True:
-                    fetched = await session.call_tool(
-                        "nvidia_get_query",
-                        arguments={"query_id": query_id},
-                    )
+                    try:
+                        fetched = await session.call_tool(
+                            "nvidia_get_query",
+                            arguments={"query_id": query_id},
+                        )
+                    except Exception as exc:
+                        raise ModelTransportError(
+                            ProviderFailureCategory.OUTCOME_UNKNOWN,
+                            "Byte-MCP async NVIDIA query polling outcome is unknown",
+                            stage="poll",
+                        ) from exc
                     payload = _extract_tool_mapping(fetched)
                     response = _completed_response(
                         payload,
