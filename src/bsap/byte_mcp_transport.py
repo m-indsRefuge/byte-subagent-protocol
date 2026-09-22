@@ -254,7 +254,7 @@ class StreamableHttpNvidiaQueryInvoker:
         mcp_url: str,
         *,
         poll_interval_seconds: float = 2.0,
-        poll_timeout_seconds: float = 420.0,
+        poll_timeout_seconds: float = 660.0,
     ) -> None:
         if poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds must be positive")

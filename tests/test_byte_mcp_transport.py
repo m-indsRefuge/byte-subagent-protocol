@@ -282,3 +282,9 @@ def test_failed_async_query_with_unknown_attempt_preserves_ambiguity() -> None:
             expected_query_id="NVQ-000002",
         )
     assert exc_info.value.category is ProviderFailureCategory.OUTCOME_UNKNOWN
+
+
+
+def test_default_async_poll_budget_covers_provider_deadline_and_grace() -> None:
+    invoker = StreamableHttpNvidiaQueryInvoker("http://127.0.0.1:8000/mcp")
+    assert invoker._poll_timeout_seconds == 660.0
