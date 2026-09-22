@@ -266,3 +266,19 @@ def test_synchronous_invoker_rejects_nested_event_loop() -> None:
         assert exc_info.value.category is ProviderFailureCategory.TRANSPORT_FAILURE
 
     asyncio.run(nested())
+
+
+
+def test_failed_async_query_with_unknown_attempt_preserves_ambiguity() -> None:
+    with pytest.raises(ModelTransportError) as exc_info:
+        _completed_response(
+            {
+                "query_id": "NVQ-000002",
+                "status": "FAILED",
+                "provider_started": True,
+                "attempt_outcome": "OUTCOME_UNKNOWN",
+                "transport_failure_kind": "ABSOLUTE_DEADLINE",
+            },
+            expected_query_id="NVQ-000002",
+        )
+    assert exc_info.value.category is ProviderFailureCategory.OUTCOME_UNKNOWN

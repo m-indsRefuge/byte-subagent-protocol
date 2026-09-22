@@ -194,7 +194,9 @@ def _completed_response(
 
     if status in _ACTIVE_QUERY_STATUSES:
         return None
-    if status == "OUTCOME_UNKNOWN":
+    if status == "OUTCOME_UNKNOWN" or (
+        status == "FAILED" and payload.get("attempt_outcome") == "OUTCOME_UNKNOWN"
+    ):
         raise ModelTransportError(
             ProviderFailureCategory.OUTCOME_UNKNOWN,
             "Byte-MCP async NVIDIA query outcome is unknown",
